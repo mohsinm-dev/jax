@@ -390,6 +390,9 @@ class CustomJVPCallPrimitive(core.Primitive):
 
   def bind_with_trace(self, trace, args, params):
     fun, jvp, tracers = args[0], args[1], args[2:]
+    # Check for eager evaluation (ensure_compile_time_eval support)
+    if config.eager_constant_folding.value and not any(isinstance(x, core.Tracer) for x in tracers):
+      return core.eval_trace.process_custom_jvp_call(self, fun, jvp, tracers, **params)
     return trace.process_custom_jvp_call(self, fun, jvp, tracers, **params)
 
   def impl(self, fun, _, *args):
@@ -995,6 +998,9 @@ class CustomVJPCallPrimitive(core.Primitive):
 
   def bind_with_trace(self, trace, args, params):
     fun, fwd, bwd, tracers = args[0], args[1], args[2], args[3:]
+    # Check for eager evaluation (ensure_compile_time_eval support)
+    if config.eager_constant_folding.value and not any(isinstance(x, core.Tracer) for x in tracers):
+      return core.eval_trace.process_custom_vjp_call(self, fun, fwd, bwd, tracers, **params)
     return trace.process_custom_vjp_call(self, fun, fwd, bwd, tracers, **params)
 
   def impl(self, fun, fwd, bwd, *args):
