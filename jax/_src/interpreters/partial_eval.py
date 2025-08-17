@@ -2171,12 +2171,38 @@ class DynamicJaxprTrace(core.Trace):
           [*const_tracers, *tracers], out_avals, map_primitive, new_params, effs, source_info=source_info)
     return out_tracers
 
+  def _extract_constants_for_eager_eval(self, tracers):
+    """Extract constant values from tracers for eager evaluation.
+    
+    Returns list of Python values if all tracers are constants, None otherwise.
+    """
+    vals = []
+    for t in tracers:
+      if isinstance(t.val, Literal):
+        vals.append(t.val.val)
+      elif (hasattr(self.frame, 'constvar_to_val') and isinstance(t.val, Var) 
+            and t.val in self.frame.constvar_to_val):
+        vals.append(self.frame.constvar_to_val[t.val])
+      else:
+        return None  # Not all inputs are constants
+    return vals
+
   def process_custom_jvp_call(self, prim, fun: lu.WrappedFun,
                               jvp: lu.WrappedFun, tracers,
                               symbolic_zeros: bool):
     source_info = source_info_util.current()
     to_jaxpr_tracer = partial(self.to_jaxpr_tracer, source_info=source_info)
-    tracers = map(to_jaxpr_tracer, tracers)
+    tracers = list(map(to_jaxpr_tracer, tracers))
+
+    # Eager constant folding under ensure_compile_time_eval():
+    # if all inputs are known at trace-time, delegate to eval interpreter
+    # (mirrors the eager path in process_primitive for regular primitives)
+    if config.eager_constant_folding.value:
+      vals = self._extract_constants_for_eager_eval(tracers)
+      if vals is not None:
+        # All inputs are constants, evaluate eagerly
+        return core.eval_trace.process_custom_jvp_call(
+            prim, fun, jvp, vals, symbolic_zeros=symbolic_zeros)
     in_avals = [t.aval for t in tracers]
     in_tangent_avals = [t.to_tangent_aval() for t in in_avals]
     fun_jaxpr, out_avals, consts = trace_to_jaxpr_dynamic(fun, in_avals)
@@ -2209,7 +2235,17 @@ class DynamicJaxprTrace(core.Trace):
                               symbolic_zeros: bool):
     source_info = source_info_util.current()
     to_jaxpr_tracer = partial(self.to_jaxpr_tracer, source_info=source_info)
-    tracers = map(to_jaxpr_tracer, tracers)
+    tracers = list(map(to_jaxpr_tracer, tracers))
+
+    # Eager constant folding under ensure_compile_time_eval():
+    # if all inputs are known at trace-time, delegate to eval interpreter
+    # (mirrors the eager path in process_primitive for regular primitives)
+    if config.eager_constant_folding.value:
+      vals = self._extract_constants_for_eager_eval(tracers)
+      if vals is not None:
+        # All inputs are constants, evaluate eagerly
+        return core.eval_trace.process_custom_vjp_call(
+            prim, fun, fwd, bwd, vals, out_trees=out_trees, symbolic_zeros=symbolic_zeros)
     in_avals = [core.AvalQDD(t.aval, core.cur_qdd(t)) if t.aval.has_qdd else t.aval for t in tracers]
     fun_jaxpr, out_avals, consts = trace_to_jaxpr_dynamic(fun, in_avals)
     num_consts = len(consts)
